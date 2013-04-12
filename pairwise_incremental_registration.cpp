@@ -11,31 +11,36 @@
 #include <pcl/filters/filter.h>
 
 #include <pcl/features/normal_3d.h>
+#include <pcl/features/normal_3d_omp.h>
 
 #include <pcl/registration/icp.h>
 #include <pcl/registration/icp_nl.h>
 #include <pcl/registration/transforms.h>
+#include <pcl/registration/correspondence_estimation.h>
+#include <pcl/registration/correspondence_rejection_sample_consensus.h>
+#include <pcl/registration/ia_ransac.h>
+#include <pcl/correspondence.h>
 
 #include <pcl/keypoints/sift_keypoint.h>
 #include <pcl/visualization/pcl_visualizer.h>
-
-
+#include <pcl/visualization/histogram_visualizer.h>
 
 #include <time.h>
-#include <pcl/registration/ia_ransac.h>
-//#include <pcl/features/pfh.h>
+#include<conio.h>
+
+
 #include <pcl/filters/passthrough.h>
-//#include <pcl/visualization/cloud_viewer.h>
-//#include <limits>
-//#include <fstream>
-//#include <vector>
-//#include <Eigen/Core>
 //#include "pcl/kdtree/kdtree_flann.h" 
 #include "pcl/filters/passthrough.h" 
 #include "pcl/filters/voxel_grid.h" 
 #include "pcl/features/fpfh.h" 
 
+#include <pcl/features/fpfh_omp.h>
 #include <pcl/surface/mls.h>
+#include <pcl/surface/mls_omp.h>
+
+// cpp_compiler_options_openmp.cpp
+#include <omp.h>
 
 const double FILTER_LIMIT = 1000.0; 
 const int MAX_SACIA_ITERATIONS = 500; 
@@ -46,6 +51,10 @@ const double NORMALS_RADIUS = 0.04;
 const double FEATURES_RADIUS = 0.04; 
 const double SAC_MAX_CORRESPONDENCE_DIST = 0.001; 
 
+const float MIN_SCALE = 0.0005; 
+const int NR_OCTAVES = 4; 
+const int NR_SCALES_PER_OCTAVE = 5; 
+const float MIN_CONTRAST = 1; 
 
 #include "openni_capture.h"
 using pcl::visualization::PointCloudColorHandlerGenericField;
@@ -61,7 +70,10 @@ using pcl::visualization::PointCloudColorHandlerCustom;
 	pcl::visualization::PCLVisualizer *p;
 	//its left and right viewports
 	int vp_1, vp_2, vp_3, vp_4;
-
+	int vp2_1, vp2_2, vp2_3, vp2_4;
+	float dwStart,serialTime,ParallelTime;
+	 Eigen::Matrix4f GlobalTransformSerial[20],GlobalTransformSerial2[20];
+	 Eigen::Matrix4f GlobalTransformParallel[20],GlobalTransformParallel2[20];
 //convenient structure to handle our pointclouds
 struct PCD
 {
@@ -70,6 +82,12 @@ struct PCD
 
   PCD() : cloud (new PointCloud) {};
 };
+struct SIFT_PCD
+{
+	pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
+	
+	SIFT_PCD() : cloud (new pcl::PointCloud<pcl::PointXYZI>) {};
+}siftCloud[32];
 
 struct PCD_OUTPUT
 {
@@ -79,7 +97,8 @@ struct PCD_OUTPUT
   PCD_OUTPUT() : cloud (new PointCloud) {};
 };
 
-std::vector<PCD_OUTPUT , Eigen::aligned_allocator<PCD_OUTPUT> > outclouds;
+std::vector<PCD_OUTPUT , Eigen::aligned_allocator<PCD_OUTPUT> > outclouds,outcloudsparallel,outclouds2,initoutclouds,initoutclouds2;
+//std::vector<SIFT_PCD , Eigen::aligned_allocator<SIFT_PCD> > siftData;
 
 struct PCDComparator
 {
@@ -112,103 +131,6 @@ public:
   }
 };
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-void view( const PointCloud::Ptr cloud ) { 
-
-        p->addPointCloud(cloud,"vp1_target",vp_1);
-		
-		p->spin();
-
-} 
-
-
-
-void filterCloud( pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc ) { 
-
-    pcl::PassThrough<pcl::PointXYZRGB> pass; 
-    pass.setInputCloud(pc); 
-    pass.setFilterFieldName("x"); 
-    pass.setFilterLimits(0, FILTER_LIMIT); 
-    pass.setFilterFieldName("y"); 
-    pass.setFilterLimits(0, FILTER_LIMIT); 
-    pass.setFilterFieldName("z"); 
-    pass.setFilterLimits(0, FILTER_LIMIT); 
-    pass.filter(*pc);   
-
-} 
-
-
-pcl::SampleConsensusInitialAlignment<pcl::PointXYZRGB, pcl::PointXYZRGB, pcl::FPFHSignature33>
-         align( pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud1, pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud2, 
-                        pcl::PointCloud<pcl::FPFHSignature33>::Ptr features1, pcl::PointCloud<pcl::FPFHSignature33>::Ptr features2 ) { 
-
-         pcl::SampleConsensusInitialAlignment<pcl::PointXYZRGB, pcl::PointXYZRGB, pcl::FPFHSignature33> sac_ia; 
-		 
-         Eigen::Matrix4f final_transformation;	
-         sac_ia.setInputCloud( cloud2 ); 
-         sac_ia.setSourceFeatures( features2 ); 
-         sac_ia.setInputTarget( cloud1 ); 
-         sac_ia.setTargetFeatures( features1 ); 
-         sac_ia.setMaximumIterations( MAX_SACIA_ITERATIONS ); 
-		 pcl::PointCloud<pcl::PointXYZRGB>::Ptr finalcloud;	
-         sac_ia.align( *finalcloud ); 
-		 cerr<<"Alignment Done";
-         return sac_ia; 
-} 
-
-
-
-
-pcl::PointCloud<pcl::FPFHSignature33>::Ptr getFeatures( const PointCloud::Ptr cloud, const PointCloudWithNormals::Ptr normals ) { 
-
-        
-        pcl::PointCloud<pcl::FPFHSignature33>::Ptr features (new pcl::PointCloud<pcl::FPFHSignature33> ());
-		pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB> ());
-         
-		 pcl::FPFHEstimation<pcl::PointXYZRGB, pcl::PointNormal, pcl::FPFHSignature33> fpfh_est;
-        fpfh_est.setInputCloud( cloud ); 
-        fpfh_est.setInputNormals( normals ); 
-        fpfh_est.setSearchMethod( tree ); 
-        fpfh_est.setRadiusSearch( FEATURES_RADIUS ); 
-        fpfh_est.compute( *features ); 
-        return features; 
-} 
-
-
-
-
-
-
-
-PointCloudWithNormals::Ptr getNormals( const pcl::PointCloud<pcl::PointXYZRGB>::Ptr incloud ) { 
-
-        PointCloudWithNormals::Ptr normalsPtr = PointCloudWithNormals::Ptr (new PointCloudWithNormals); 
-		pcl::NormalEstimation<PointT, PointNormalT> norm_est;
-		pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB> ());
-		norm_est.setSearchMethod(tree);
-		
-        norm_est.setInputCloud( incloud ); 
-        norm_est.setRadiusSearch( NORMALS_RADIUS ); 
-        norm_est.compute( *normalsPtr ); 
-        return normalsPtr; 
-} 
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -307,27 +229,6 @@ void loadData (int argc, char **argv, std::vector<PCD, Eigen::aligned_allocator<
 	cerr<<i<<" no cloud loaded";
   }
 
- /* for(int i=0 ; i< models[0].cloud->size(); i++ )
-  {
-	  cerr<<models[0].cloud->points[i].x;
-  }
-
-  PCD m;
-   m.f_name = argv[0];
-   //m.cloud=models[0].cloud;
-   cerr<<"name done";
-   m.cloud->points.resize(models[0].cloud->width*models[0].cloud->height);
-  for(int i=0 ; i< models[0].cloud->size(); i++ )
-  {
-  m.cloud->points[i].x =models[0].cloud->points[i].x +0.05f ;
-  m.cloud->points[i].y =models[0].cloud->points[i].y +0.02f;
-  m.cloud->points[i].z =models[0].cloud->points[i].z +0.07f;
-  m.cloud->points[i].rgba =models[0].cloud->points[i].rgba;
-  }
-  cerr<<"Data done";
-  models.push_back(m);
-  cerr<<" Second cloud loaded";
-  */
 }
 
 
@@ -363,28 +264,91 @@ void captureData (int argc, char **argv, std::vector<PCD, Eigen::aligned_allocat
   }
 }
 
- void smothClouds(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud )
+ void smothCloudsOMP(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud )
  {
 	 cerr<<cloud<<"Processing..";
-	  pcl::MovingLeastSquares<pcl::PointXYZRGB, pcl::PointNormal> mls;
+	  pcl::MovingLeastSquaresOMP<pcl::PointXYZRGB, pcl::PointNormal> mls;
 	  pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB>);
 	  pcl::PointCloud<pcl::PointNormal> mls_points;
 	  mls.setComputeNormals (true);
-
+	  
 	  // Set parameters
 	  mls.setInputCloud (cloud);
 	  mls.setPolynomialFit (true);
 	  mls.setSearchMethod (tree);
-	  mls.setSearchRadius (0.03);
-
+	  mls.setSearchRadius (0.3);
+	  cerr<<"Para Set";
 	  // Reconstruct
 	  mls.process (mls_points);
 		cerr<<"Done";
  }
+ 
+ pcl::PointCloud<pcl::Normal>::Ptr getNormals_New( const pcl::PointCloud<pcl::PointXYZRGB>::Ptr incloud ) { 
+
+        pcl::PointCloud<pcl::Normal>::Ptr normalsPtr (new pcl::PointCloud<pcl::Normal>); 
+		pcl::NormalEstimation<PointT, pcl::Normal> norm_est;
+		pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB> ());
+		norm_est.setSearchMethod(tree);
+		
+        norm_est.setInputCloud( incloud ); 
+        norm_est.setRadiusSearch( NORMALS_RADIUS ); 
+        norm_est.compute( *normalsPtr ); 
+		cerr<<"\nNormal size "<<normalsPtr->points.size();
+        return normalsPtr; 
+}
+
+ void compute_FPFH_features(pcl::PointCloud<pcl::PointXYZRGB>::Ptr points, pcl::PointCloud<pcl::Normal>::Ptr normals, pcl::PointCloud<pcl::PointXYZI>::Ptr keypoints, float feature_radius,
+pcl::PointCloud<pcl::FPFHSignature33>::Ptr &descriptors_out)
+{
+	 cerr<<"\nIn FPFH";
+	pcl::FPFHEstimationOMP<pcl::PointXYZRGB, pcl::Normal,pcl::FPFHSignature33> fpfh_est;
+	//pcl::FPFHEstimation<pcl::PointXYZRGB, pcl::Normal,pcl::FPFHSignature33> fpfh_est2;
+
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr keypoints_xyzrgb(new pcl::PointCloud<pcl::PointXYZRGB>);
+	pcl::copyPointCloud (*keypoints,*keypoints_xyzrgb);
+	
+	/*p->setBackgroundColor(0,1,0,vp_3);
+	p->addPointCloud(keypoints_xyzrgb,"siftRgb",vp_3);
+	p->spinOnce();*/
+
+	pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB> () );
+	fpfh_est.setSearchMethod(tree);
+	fpfh_est.setRadiusSearch (feature_radius);
+	fpfh_est.setSearchSurface (points);
+	fpfh_est.setInputNormals (normals);
+	fpfh_est.setInputCloud (keypoints_xyzrgb);
+	//fpfh_est.compute (*descriptors_out);
+	
+	fpfh_est.compute(*descriptors_out);
+	cerr<<" Descrip size "<<descriptors_out->points.size();
+	/* for(int i=0;i<descriptors_out->points.size();i++)
+		 cerr<<"\n"<<descriptors_out->at(i);
+	 */
+}
+
+
+ pcl::PointCloud<pcl::PointXYZI>::Ptr getSIFTKeypoints(pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr cloudIn)
+{
+	pcl::SIFTKeypoint<pcl::PointXYZRGB,pcl::PointXYZI> siftdetect;
+	pcl::SIFTKeypoint<pcl::PointXYZRGB,pcl::PointXYZI>::PointCloudOut output; 
+	pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB> () );
+	siftdetect.setInputCloud(cloudIn);
+	siftdetect.setSearchSurface(cloudIn);
+	siftdetect.setSearchMethod(tree);
+	siftdetect.setMinimumContrast(MIN_CONTRAST);
+	siftdetect.setScales(MIN_SCALE,NR_OCTAVES,NR_SCALES_PER_OCTAVE);
+	siftdetect.compute(output);
+		
+	pcl::PointCloud<pcl::PointXYZI>::Ptr keypoints(new pcl::PointCloud<pcl::PointXYZI>);
+	pcl::copyPointCloud(output,*keypoints);
+	cerr<<"\nsift size.."<<keypoints->points.size();
+	
+	return keypoints;
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////
-/** \brief Align a pair of PointCloud datasets and return the result
+/** \brief Align a pair of PointCloud datasets and return the result, modify cloud
   * \param cloud_src the source PointCloud
   * \param cloud_tgt the target PointCloud
   * \param output the resultant aligned source PointCloud
@@ -419,18 +383,20 @@ void pairAlign (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt
   PointCloudWithNormals::Ptr points_with_normals_src (new PointCloudWithNormals);
   PointCloudWithNormals::Ptr points_with_normals_tgt (new PointCloudWithNormals);
 
-  pcl::NormalEstimation<PointT, PointNormalT> norm_est;
+  pcl::NormalEstimationOMP<PointT, PointNormalT> norm_est;
   pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB> ());
   
   norm_est.setSearchMethod (tree);
   norm_est.setKSearch (30);
-  //norm_est.setRadiusSearch();
-
+  
   //if(downsample)
   //norm_est.setSearchSurface(cloud_src);
   
   norm_est.setInputCloud (src);
+   time_t starttime = time(NULL);
   norm_est.compute (*points_with_normals_src);
+  cerr<<"Time taken"<<time(NULL)-starttime;
+
   pcl::copyPointCloud (*src, *points_with_normals_src);
 
   cerr<<"Size of point cloud with normal src "<<points_with_normals_src->points.size()<<endl;
@@ -438,7 +404,9 @@ void pairAlign (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt
   //if(downsample)
   //norm_est.setSearchSurface(cloud_tgt);
   norm_est.setInputCloud (tgt);
+  starttime = time(NULL);
   norm_est.compute (*points_with_normals_tgt);
+  cerr<<"Time taken"<<time(NULL)-starttime;
   pcl::copyPointCloud (*tgt, *points_with_normals_tgt);
   cerr<<"Size of point cloud with normal trg "<<points_with_normals_tgt->points.size()<<endl;
   //
@@ -461,13 +429,9 @@ void pairAlign (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt
   reg.setInputCloud (points_with_normals_src);
   reg.setInputTarget (points_with_normals_tgt);
 
-
-
-  //
-  // Run the same optimization in a loop and visualize the results
   Eigen::Matrix4f Ti = Eigen::Matrix4f::Identity (), prev, targetToSource;
   PointCloudWithNormals::Ptr reg_result = points_with_normals_src;
-  reg.setMaximumIterations(20);
+  reg.setMaximumIterations(10);
   for (int i = 0; i < 1; ++i)
   {
     PCL_INFO ("Iteration Nr. %d.\n", i);
@@ -490,13 +454,10 @@ void pairAlign (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt
     
     prev = reg.getLastIncrementalTransformation ();
 
-    // visualize current state
-    showCloudsRight(points_with_normals_tgt, points_with_normals_src);
-	cerr<<"Coverage "<<reg.hasConverged()<< " score: " << reg.getFitnessScore() << std::endl;
-  cerr<<Ti<<endl;
- /* if(reg.getFitnessScore()<0.0015)
+      
+  if(reg.getFitnessScore()<0.0015)
 	  break;
-  }*/
+  }
 
 	//
   // Get the transformation from target to source
@@ -506,93 +467,515 @@ void pairAlign (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt
   // Transform target back in source frame
   pcl::transformPointCloud (*cloud_tgt, *output, targetToSource);
 
-  p->removePointCloud ("source");
+  /*p->removePointCloud ("source");
   p->removePointCloud ("target");
   p->removePointCloud ("last");
   PointCloudColorHandlerCustom<PointT> cloud_tgt_h (output, 0, 255, 0);
   PointCloudColorHandlerCustom<PointT> cloud_src_h (cloud_src, 255, 0, 0);
   p->addPointCloud (output, cloud_tgt_h, "target", vp_2);
-  p->addPointCloud (cloud_src, cloud_src_h, "source", vp_2);
+  p->addPointCloud (cloud_src, cloud_src_h, "source", vp_2);*/
 
 
 
     //add the source to the transformed target to visualize output of this step
-  *stepoutput= *cloud_src;
-  *stepoutput += *output;
-
-  
-  //p->addPointCloud (output,  "target", vp_2);
-  //p->addPointCloud (cloud_src, "source", vp_2);
-  p->addPointCloud(stepoutput,"last",vp_3);
+  //*stepoutput= *cloud_src;
+  //*stepoutput += *output;
+  //
+  //p->addPointCloud(stepoutput,"last",vp_3);
 
 	//PCL_INFO ("Press q to continue the registration.\n");
-   if(reg.getFitnessScore()<0.0015)
+ /*  if(reg.getFitnessScore()<0.0015)
 	  break;
-  }
-  p->spin ();
-  cleanAllClouds();
-  p->removePointCloud ("source"); 
-  p->removePointCloud ("target");
+  }*/
+  //p->spin ();
+  //cleanAllClouds();
+  //p->removePointCloud ("source"); 
+  //p->removePointCloud ("target");
 
-  cerr<<"Coverage "<<reg.hasConverged()<< " score: " << reg.getFitnessScore() << std::endl;
+  cerr<<cloud_src<<"  "<<cloud_tgt<<" Coverage "<<reg.hasConverged()<< " score: " << reg.getFitnessScore() << std::endl;
   cerr<<targetToSource<<endl;
   
   final_transform = targetToSource;
  }
 
- void callSACIA(std::vector<PCD, Eigen::aligned_allocator<PCD> > &data)
- {
-	 time_t starttime = time(NULL); 
-	 pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud1 (new pcl::PointCloud<pcl::PointXYZRGB>);     
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud2 (new pcl::PointCloud<pcl::PointXYZRGB>);     
-	cloud1=data[0].cloud;
-	cloud2=data[1].cloud;
-	    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud1ds (new pcl::PointCloud<pcl::PointXYZRGB>);     
-		pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud2ds (new pcl::PointCloud<pcl::PointXYZRGB>);     
-        pcl::VoxelGrid<pcl::PointXYZRGB> vox_grid; 
-        vox_grid.setLeafSize( VOXEL_GRID_SIZE, VOXEL_GRID_SIZE, VOXEL_GRID_SIZE ); 
-        vox_grid.setInputCloud( cloud1 ); 
-        vox_grid.filter( *cloud1ds ); 
-		
-        vox_grid.setInputCloud( cloud2 ); 
-        vox_grid.filter( *cloud2ds ); 
+ ////////////////////////////////////////////////////////////////////////////////
+/** \brief ICPOMP call this function, it just return transformation not modifing cloud
+  * \param cloud_src source cloud
+  * \param cloud_tgt target cloud 
+  * \param final_transform matrix
+  */
+ void pairAlignForOMP (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt, Eigen::Matrix4f &final_transform, bool downsample = true)
+{
+  //
+  // Downsample for consistency and speed
+  // \note enable this for large datasets
+  PointCloud::Ptr src (new PointCloud);
+  PointCloud::Ptr tgt (new PointCloud);
+  PointCloud::Ptr stepoutput(new PointCloud);
+  pcl::VoxelGrid<PointT> grid;
+  if (downsample)
+  {
+    grid.setLeafSize (0.05, 0.05, 0.05);
+    grid.setInputCloud (cloud_src);
+    grid.filter (*src);
 
-        cout << "done. Time elapsed: " << time(NULL) - starttime << " seconds\nCalculating normals..."; 
-    cout.flush();     
+    grid.setInputCloud (cloud_tgt);
+    grid.filter (*tgt);
+  }
+  else
+  {
+    src = cloud_src;
+    tgt = cloud_tgt;
+  }
 
-        //compute normals 
-        PointCloudWithNormals::Ptr normals1 = getNormals( cloud1ds ); 
-        PointCloudWithNormals::Ptr normals2 = getNormals( cloud2ds ); 
 
-        cout << "done. Time elapsed: " << time(NULL) - starttime << " seconds\nComputing local features..."; 
-    cout.flush(); 
+  // Compute surface normals and curvature
+  PointCloudWithNormals::Ptr points_with_normals_src (new PointCloudWithNormals);
+  PointCloudWithNormals::Ptr points_with_normals_tgt (new PointCloudWithNormals);
 
-        //compute local features 
-        pcl::PointCloud<pcl::FPFHSignature33>::Ptr features1 = getFeatures( cloud1ds, normals1 ); 
-        pcl::PointCloud<pcl::FPFHSignature33>::Ptr features2 = getFeatures( cloud2ds, normals2 ); 
-		cerr<<"Feature1 size"<<features1->points.size();
-		cerr<<"Feature2 size"<<features2->points.size();
-        cout << "done. Time elapsed: " << time(NULL) - starttime << " seconds\nComputing initial alignment using SAC..."; 
-    cout.flush(); 
+  pcl::NormalEstimationOMP<PointT, PointNormalT> norm_est;
+  pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB> ());
+  
+  norm_est.setSearchMethod (tree);
+  norm_est.setKSearch (30);
+  //norm_est.setRadiusSearch();
 
-        //Get an initial estimate for the transformation using SAC 
-        //returns the transformation for cloud2 so that it is aligned with cloud1 
-        pcl::SampleConsensusInitialAlignment<pcl::PointXYZRGB, pcl::PointXYZRGB, pcl::FPFHSignature33> sac_ia = align( cloud1ds, cloud2ds, features1, features2 ); 
-        Eigen::Matrix4f	init_transform = sac_ia.getFinalTransformation(); 
-        transformPointCloud( *cloud2, *cloud2, init_transform ); 
-		pcl::PointCloud<pcl::PointXYZRGB>::Ptr final;
-		final = cloud1; 
-        *final += *cloud2; 
+  //if(downsample)
+  //norm_est.setSearchSurface(cloud_src);
+  
+  norm_est.setInputCloud (src);
+   time_t starttime = time(NULL);
+  norm_est.compute (*points_with_normals_src);
+  cerr<<"Time taken"<<time(NULL)-starttime;
 
-        cout << "done. Time elapsed: " << time(NULL) - starttime << " seconds\n"; 
-        cout << "Opening aligned cloud; will return when viewer window is closed."; 
-    cout.flush(); 
-	view(final);
+  pcl::copyPointCloud (*src, *points_with_normals_src);
+
+  cerr<<"Size of point cloud with normal src "<<points_with_normals_src->points.size()<<endl;
+
+  //if(downsample)
+  //norm_est.setSearchSurface(cloud_tgt);
+  norm_est.setInputCloud (tgt);
+  starttime = time(NULL);
+  norm_est.compute (*points_with_normals_tgt);
+  cerr<<"Time taken"<<time(NULL)-starttime;
+  pcl::copyPointCloud (*tgt, *points_with_normals_tgt);
+  cerr<<"Size of point cloud with normal trg "<<points_with_normals_tgt->points.size()<<endl;
+  //
+  // Instantiate our custom point representation (defined above) ...
+  MyPointRepresentation point_representation;
+  // ... and weight the 'curvature' dimension so that it is balanced against x, y, and z
+  float alpha[4] = {1.0, 1.0, 1.0, 1.0};
+  point_representation.setRescaleValues (alpha);
+
+  //
+  // Align
+  pcl::IterativeClosestPointNonLinear<PointNormalT, PointNormalT> reg;
+  reg.setTransformationEpsilon (1e-6);
+  // Set the maximum distance between two correspondences (src<->tgt) to 10cm
+  // Note: adjust this based on the size of your datasets
+  reg.setMaxCorrespondenceDistance (0.1);  
+  // Set the point representation
+  reg.setPointRepresentation (boost::make_shared<const MyPointRepresentation> (point_representation));
+  reg.setRANSACOutlierRejectionThreshold( 0.1 ); 
+  reg.setInputCloud (points_with_normals_src);
+  reg.setInputTarget (points_with_normals_tgt);
+  
+  // Run the same optimization in a loop and visualize the results
+  Eigen::Matrix4f Ti = Eigen::Matrix4f::Identity (), prev, targetToSource;
+  PointCloudWithNormals::Ptr reg_result = points_with_normals_src;
+  reg.setMaximumIterations(10);
+  for (int i = 0; i < 1; ++i)
+  {
+    PCL_INFO ("Iteration Nr. %d.\n", i);
+
+    // save cloud for visualization purpose
+    points_with_normals_src = reg_result;
+
+    // Estimate
+    reg.setInputCloud (points_with_normals_src);
+    reg.align (*reg_result);
+	
+		//accumulate transformation between each Iteration
+    Ti = reg.getFinalTransformation () * Ti;
+
+		//if the difference between this transformation and the previous one
+		//is smaller than the threshold, refine the process by reducing
+		//the maximal correspondence distance
+    if (fabs ((reg.getLastIncrementalTransformation () - prev).sum ()) < reg.getTransformationEpsilon ())
+      reg.setMaxCorrespondenceDistance (reg.getMaxCorrespondenceDistance () - 0.001);
+    
+    prev = reg.getLastIncrementalTransformation ();
+
+ 
+   if(reg.getFitnessScore()<0.0015)
+	  break;
+  }
+  //p->spin ();
+  //cleanAllClouds();
+  //p->removePointCloud ("source"); 
+  //p->removePointCloud ("target");
+  targetToSource = Ti.inverse();
+  cerr<<cloud_src<<"  "<<cloud_tgt<<" Coverage "<<reg.hasConverged()<< " score: " << reg.getFitnessScore() << std::endl;
+  cerr<<targetToSource<<endl;
+  
+  final_transform = targetToSource;
  }
 
+ void pairAlignUsingSift(pcl::PointCloud<pcl::PointXYZI>::Ptr &features1,pcl::PointCloud<pcl::PointXYZI>::Ptr &features2,Eigen::Matrix4f &final_transform)
+{
+ //pcl::IterativeClosestPointNonLinear<pcl::FPFHSignature33,pcl::FPFHSignature33 > reg;
+  pcl::IterativeClosestPoint<pcl::PointXYZI,pcl::PointXYZI > reg;
+  reg.setTransformationEpsilon (1e-6);
+  reg.setMaxCorrespondenceDistance (1);  
+  // Set the point representation
+  reg.setRANSACOutlierRejectionThreshold( 0.1 ); 
+  reg.setInputCloud (features1);
+  reg.setInputTarget (features2);
+  
+  // Run the same optimization in a loop and visualize the results
+  Eigen::Matrix4f Ti = Eigen::Matrix4f::Identity (), targetToSource;
+  pcl::PointCloud<pcl::PointXYZI>::Ptr reg_result(new pcl::PointCloud<pcl::PointXYZI>) ;
+  reg.setMaximumIterations(10);
+        // Estimate   
+    reg.align (*reg_result);
+	//accumulate transformation between each Iteration
+    Ti = reg.getFinalTransformation () ;
+	cerr<<Ti;
+	targetToSource=Ti.inverse();
+	final_transform=targetToSource;
+	
+
+}
+ 
+ pcl::Correspondences findCorrespondance(pcl::PointCloud<pcl::FPFHSignature33>::Ptr &features1, pcl::PointCloud<pcl::FPFHSignature33>::Ptr &features2)
+ {
+	 pcl::registration::CorrespondenceEstimation< pcl::FPFHSignature33, pcl::FPFHSignature33  > cer;
+	 pcl::registration::CorrespondenceEstimation <pcl::PointXYZRGB,pcl::PointXYZRGB > cer2;
+	 
+	 pcl::Correspondences corres,recpCorres;
+	 cer.setInputCloud(features1);
+	 cer.setInputTarget(features2);
+	 
+	 cer.determineReciprocalCorrespondences(corres);
+	 cerr<<"\nFPFH Corres size "<<corres.size();
+	/* cer.determineReciprocalCorrespondences(recpCorres);
+	 cerr<<"\nRecip Correspondance size "<<recpCorres.size()<<"\n";
+	 
+	 for(int i=0;i<recpCorres.size();i++)
+		 cerr<<"\n"<<recpCorres.at(i);*/
+	 
+	 return corres;
+ }
+ pcl::Correspondences findCorrespondanceFromSift(pcl::PointCloud<pcl::PointXYZI>::Ptr &keypoints1, pcl::PointCloud<pcl::PointXYZI>::Ptr &keypoints2)
+ {
+	 pcl::registration::CorrespondenceEstimation< pcl::PointXYZI, pcl::PointXYZI  > cer;
+
+	 
+	 pcl::Correspondences corres,recpCorres;
+	 cer.setInputCloud(keypoints1);
+	 cer.setInputTarget(keypoints2);
+	 
+	 cer.determineReciprocalCorrespondences(corres);
+	 cerr<<"\nSIFT Corres size "<<corres.size();
+	/* cer.determineReciprocalCorrespondences(recpCorres);
+	 cerr<<"\nRecip Correspondance size "<<recpCorres.size()<<"\n";
+	 
+	 for(int i=0;i<recpCorres.size();i++)
+		 cerr<<"\n"<<recpCorres.at(i);*/
+	 
+	 return corres;
+ }
+
+ pcl::CorrespondencesPtr findCorrespondanceNew(pcl::PointCloud<pcl::FPFHSignature33>::Ptr &features1, pcl::PointCloud<pcl::FPFHSignature33>::Ptr &features2)
+ {
+	 pcl::registration::CorrespondenceEstimation< pcl::FPFHSignature33, pcl::FPFHSignature33  > cer;
+	 pcl::CorrespondencesPtr corres,recpCorres;
+	 cer.setInputCloud(features1);
+	 cer.setInputTarget(features2);
+	 cer.determineCorrespondences(*corres);
+	
+	/* cer.determineReciprocalCorrespondences(recpCorres);
+	 cerr<<"\nRecip Correspondance size "<<recpCorres.size()<<"\n";
+	 
+	 for(int i=0;i<recpCorres.size();i++)
+		 cerr<<"\n"<<recpCorres.at(i);*/
+	 
+	 return corres;
+ }
+
+ void viewCorrespondance(pcl::Correspondences corres,int vp)
+ {
+  
+ }
+void temp(std::vector<PCD, Eigen::aligned_allocator<PCD> > &data)
+ {
+	 pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud1 (new pcl::PointCloud<pcl::PointXYZRGB>);     
+     pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud2 (new pcl::PointCloud<pcl::PointXYZRGB>);     
+	 
+	 cerr<<"\ncloud size "<<data[0].cloud->points.size();
+	 cerr<<"\ncloud size "<<data[1].cloud->points.size();
+
+	 pcl::VoxelGrid<pcl::PointXYZRGB> vox_grid; 
+       vox_grid.setLeafSize( VOXEL_GRID_SIZE, VOXEL_GRID_SIZE, VOXEL_GRID_SIZE ); 
+	   vox_grid.setInputCloud(data[0].cloud);
+	   vox_grid.filter(*cloud1);
+	   vox_grid.setInputCloud(data[1].cloud);
+	   vox_grid.filter(*cloud2);
+
+	   cerr<<"\nCloud Filter Size "<<cloud1->points.size();
+	   cerr<<"\nCloud Filter Size "<<cloud2->points.size();
+	 pcl::PointCloud<pcl::PointXYZI>::Ptr siftKeyPoints1 = getSIFTKeypoints(cloud1);
+	 pcl::PointCloud<pcl::PointXYZI>::Ptr siftKeyPoints2 = getSIFTKeypoints(cloud2);
+		
+	  PointCloudColorHandlerCustom<pcl::PointXYZI> tgt_h (siftKeyPoints1, 0, 255, 0);
+	  PointCloudColorHandlerCustom<pcl::PointXYZI> src_h (siftKeyPoints2, 255, 0, 0);
+	  p->addPointCloud (siftKeyPoints1, tgt_h, "vp1_target", vp_2);
+	  p->addPointCloud (siftKeyPoints2, src_h, "vp1_source", vp_2);
+	  p->addPointCloud (siftKeyPoints1, tgt_h, "vp3_target", vp_3);
+	  p->addPointCloud (siftKeyPoints2, src_h, "vp3_source", vp_3);
+	 // p->spin();
+
+	 pcl::PointCloud<pcl::Normal>::Ptr normal1 = getNormals_New(cloud1);
+	 pcl::PointCloud<pcl::Normal>::Ptr normal2 = getNormals_New(cloud2);
+	 pcl::PointCloud<pcl::FPFHSignature33>::Ptr descriptor1(new pcl::PointCloud<pcl::FPFHSignature33>);
+	 pcl::PointCloud<pcl::FPFHSignature33>::Ptr descriptor2(new pcl::PointCloud<pcl::FPFHSignature33>);
+	 compute_FPFH_features(cloud1,normal1,siftKeyPoints1,0.3,descriptor1);
+	 compute_FPFH_features(cloud2,normal2,siftKeyPoints2,0.3,descriptor2);
+	 cerr<<"Finished";
+	
+	 /*pcl::visualization::PCLHistogramVisualizer hist; 
+	 hist.addFeatureHistogram(*descriptor1,50,"Hist1",640,200);
+	 hist.addFeatureHistogram(*descriptor2,50,"Hist2",640,200);
+	 hist.spin();*/
+	
+	 pcl::Correspondences corres =findCorrespondance(descriptor1,descriptor2);
+	 pcl::Correspondences corres2= findCorrespondanceFromSift(siftKeyPoints1,siftKeyPoints2);
+	  //cerr<<"\nCorrespondance size "<<corres.size()<<"\n";
+	/*viewCorrespondance(corres,vp_3); 
+	viewCorrespondance(corres2,vp_2);*/
+	
+	 /*for(int i=0;i<corres.size();i++)
+		 cerr<<"\n"<<corres.at(i);*/
+	 
+	 
+	 p->addPointCloud(data[0].cloud,"cl12",vp_2);
+	 p->addPointCloud(data[1].cloud,"cl22",vp_2);
+	 p->addPointCloud(data[0].cloud,"cl13",vp_3);
+	 p->addPointCloud(data[1].cloud,"cl23",vp_3);
+	 
+	 cerr<<"\nVisual Corre1 \n";
+	 for(int  i=0;i<corres.size();i++)
+	 {
+		 pcl::PointXYZI srcpt=siftKeyPoints1->points.at(corres[i].index_query);
+		 pcl::PointXYZI tgtpt=siftKeyPoints2->points.at(corres[i].index_match);
+		 
+		 //cerr<<"\n"<<srcpt.x<<" "<<srcpt.y<<" "<<srcpt.z;
+		 //cerr<<"\n"<<tgtpt.x<<" "<<tgtpt.y<<" "<<tgtpt.z;
+		
+		 std::stringstream ss1 ("line_vp_1_");
+		 std::stringstream ss2 ("line_vp_2_");
+		 std::stringstream ss3 ("line_vp_3_");
+		 ss1<<i;
+		 ss2<<i;
+		 ss3<<i;
+		 p->addLine<pcl::PointXYZI>(srcpt,tgtpt,ss2.str(),vp_2);
+		 //p->addLine<pcl::PointXYZRGB>(srcpt,tgtpt,1,0,0,ss1.str(),vp_1);
+		 //p->addLine<pcl::PointXYZRGB>(srcpt,tgtpt,1,0,0,ss2.str(),vp_2);
+
+	 }
+
+	cerr<<"\nVisual Corre1 \n";	
+	 for(int  i=0;i<corres2.size();i++)
+	 {
+		 pcl::PointXYZI srcpt=siftKeyPoints1->points.at(corres2[i].index_query);
+		 pcl::PointXYZI tgtpt=siftKeyPoints2->points.at(corres2[i].index_match);
+		 /*cerr<<"\n"<<srcpt.x<<" "<<srcpt.y<<" "<<srcpt.z;
+		 cerr<<"\n"<<tgtpt.x<<" "<<tgtpt.y<<" "<<tgtpt.z;*/
+		 /*pcl::PointXYZRGB srcpt=cloud1->points.at(corres[i].index_match);
+		 pcl::PointXYZRGB tgtpt=cloud2->points.at(corres[i].index_query);*/
+		 std::stringstream ss1 ("line_vp_1_");
+		 std::stringstream ss2 ("line_vp_2_");
+		 std::stringstream ss3 ("line_vp_3_");
+		 ss1<<i;
+		 ss2<<i;
+		 ss3<<i;
+		 //p->addLine<pcl::PointXYZRGB>(srcpt,tgtpt,1,0,0,ss2.str(),vp_2);
+		 p->addLine<pcl::PointXYZI>(srcpt,tgtpt,ss3.str(),vp_3);
+		 //p->addLine<pcl::PointXYZRGB>(srcpt,tgtpt,1,0,0,ss1.str(),vp_1);
+		 //p->addLine<pcl::PointXYZRGB>(srcpt,tgtpt,1,0,0,ss2.str(),vp_2);
+
+	 }
+	 
+	 p->spin();
+	 p->removeAllPointClouds(vp_2);
+	 p->removeAllPointClouds(vp_3);
+	 p->spin();
+
+		/* pcl::CorrespondencesPtr corresPtr =findCorrespondanceNew(descriptor1,descriptor2);
+	  cerr<<"\nCorrespondance size "<<corresPtr->size()<<"\n";
+*/
+boost::shared_ptr<pcl::Correspondences > corresPtr (new pcl::Correspondences(corres));
+		boost::shared_ptr<pcl::Correspondences > newCorres (new pcl::Correspondences()) ;
+		//pcl::CorrespondencesPtr  newCorres=new pcl::CorrCorrespondencesPtr();
+		 cerr<<"\nPtr correct";
+		 pcl::registration::CorrespondenceRejectorSampleConsensus<pcl::PointXYZI> crsc;
+		 crsc.setInputCloud(siftKeyPoints1);
+		 crsc.setTargetCloud(siftKeyPoints2);
+		 crsc.setInputCorrespondences(corresPtr);
+		 
+		 crsc.setMaxIterations(200);
+		 cerr<<"\nIP correct";
+		 crsc.getCorrespondences(*newCorres);
+		 Eigen::Matrix4f initialTransformation=crsc.getBestTransformation();
+		 cerr<<"\n"<<initialTransformation;
+		 cerr<<"\nNew Corres Size "<<newCorres->size();
+
+		  cerr<<"\nVisual new Corre \n";
+		  p->removeAllShapes(vp_2);
+		  //p->removeAllShapes(vp_2);
+	 for(int  i=0;i<newCorres->size();i++)
+	 {
+		 pcl::PointXYZI srcpt=siftKeyPoints1->points.at( newCorres->at(i).index_query);
+		 pcl::PointXYZI tgtpt=siftKeyPoints2->points.at(newCorres->at(i).index_match);
+		 
+		/* cerr<<"\n"<<srcpt.x<<" "<<srcpt.y<<" "<<srcpt.z;
+		 cerr<<"\n"<<tgtpt.x<<" "<<tgtpt.y<<" "<<tgtpt.z;*/
+		
+		 std::stringstream ss1 ("line_vp_1_");
+		 std::stringstream ss2 ("line_vp_2_");
+		 std::stringstream ss3 ("newline_vp_3_");
+		 ss1<<i;
+		 ss2<<i;
+		 ss3<<i;
+		 
+		 p->addLine<pcl::PointXYZI>(srcpt,tgtpt,ss3.str(),vp_2);
+		 //p->addLine<pcl::PointXYZRGB>(srcpt,tgtpt,1,0,0,ss1.str(),vp_1);
+		 //p->addLine<pcl::PointXYZRGB>(srcpt,tgtpt,1,0,0,ss2.str(),vp_2);
+
+	 }
+
+
+	 boost::shared_ptr<pcl::Correspondences > corres2Ptr (new pcl::Correspondences(corres2));
+		boost::shared_ptr<pcl::Correspondences > newCorres2 (new pcl::Correspondences()) ;
+		//pcl::CorrespondencesPtr  newCorres=new pcl::CorrCorrespondencesPtr();
+		 cerr<<"\nPtr correct";
+		 pcl::registration::CorrespondenceRejectorSampleConsensus<pcl::PointXYZI> crsc2;
+		 crsc2.setInputCloud(siftKeyPoints1);
+		 crsc2.setTargetCloud(siftKeyPoints2);
+		 crsc2.setInputCorrespondences(corres2Ptr);
+		 
+		 crsc2.setMaxIterations(200);
+		 cerr<<"\nIP correct";
+		 crsc2.getCorrespondences(*newCorres2);
+		 
+		 Eigen::Matrix4f initialTransformation2=crsc2.getBestTransformation();	
+		 cerr<<"\n"<<initialTransformation2;
+		 cerr<<"\nNew Corres Size "<<newCorres2->size();
+		 p->removeAllShapes(vp_3);
+		  for(int  i=0;i<newCorres2->size();i++)
+	 {
+		 pcl::PointXYZI srcpt=siftKeyPoints1->points.at( newCorres2->at(i).index_query);
+		 pcl::PointXYZI tgtpt=siftKeyPoints2->points.at(newCorres2->at(i).index_match);
+		 
+		 /*cerr<<"\n"<<srcpt.x<<" "<<srcpt.y<<" "<<srcpt.z;
+		 cerr<<"\n"<<tgtpt.x<<" "<<tgtpt.y<<" "<<tgtpt.z;*/
+				 
+		 std::stringstream ss2 ("line2_vp_2_");
+				 
+		 ss2<<i;
+				 
+		 p->addLine<pcl::PointXYZI>(srcpt,tgtpt,ss2.str(),vp_3);
+		 
+	 }
+	 p->spin();
+
+	 /*p->removeAllPointClouds();
+	 p->spin();*/
+	 //p->removeAllPointClouds(vp_3);
+	 //p->removeAllShapes(vp_2);
+	 //p->setBackgroundColor(0,0,1);
+	 //p->addCorrespondences<pcl::PointXYZI>(siftKeyPoints1,siftKeyPoints2,corres2,"CoRR",vp_2);
+	 
+	 pcl::visualization::PCLVisualizer *p2=new pcl::visualization::PCLVisualizer();
+	 p2->setBackgroundColor(0,0,0);
+	 p2->createViewPort (0.0, 0, 0.33, 1.0, vp2_1);
+	 p2->createViewPort (0.33, 0, 0.66, 1.0, vp2_2);
+	 p2->createViewPort (0.66, 0, 1.0, 1.0, vp2_3);
+	 p2->addPointCloud(data[0].cloud,"cl11",vp2_1);
+	 p2->addPointCloud(data[1].cloud,"cl12",vp2_1);
+	 pcl::PointCloud<pcl::PointXYZRGB>::Ptr result1 (new pcl::PointCloud<pcl::PointXYZRGB>);
+	 pcl::PointCloud<pcl::PointXYZRGB>::Ptr result2 (new pcl::PointCloud<pcl::PointXYZRGB>);
+
+	 Eigen::Matrix4f initialTransformationInverse=initialTransformation.inverse();
+	 pcl::transformPointCloud(*data[1].cloud,*result1,initialTransformationInverse);
+	 p2->addPointCloud(data[0].cloud,"cl21",vp2_2);
+	 p2->addPointCloud(result1,"cl22",vp2_2);
+
+	/* pcl::transformPointCloud(*data[0].cloud,*result1,initialTransformation);
+	 p2->addPointCloud(data[0].cloud,"cl21",vp2_2);
+	 p2->addPointCloud(result1,"cl22",vp2_2);*/
+	 
+	 pcl::transformPointCloud(*data[0].cloud,*result2,initialTransformation2);
+	 p2->addPointCloud(data[1].cloud,"cl31",vp2_3);
+	 p2->addPointCloud(result2,"cl32",vp2_3);
+
+	 /*PCD_OUTPUT po;
+	 po.cloud=data[0].cloud;
+	 initoutclouds.push_back(po);
+	 initoutclouds2.push_back(po);
+	 pcl::transformPointCloud(*data[1].cloud,*po.cloud,initialTransformation);
+	 initoutclouds.push_back( po);
+	 pcl::transformPointCloud(*data[1].cloud,*po.cloud,initialTransformation2);
+	 initoutclouds2.push_back( po);
+	  for(int  i=0;i<initoutclouds2.size();i++)
+	 {
+		 std::stringstream ss1 ("CloudOut1vp_1_");
+		 std::stringstream ss2 ("CloudOut2vp_1_");
+		 std::stringstream ss3 ("CloudOut3vp_1_");
+		 ss1<<i;
+		 ss2<<i;
+		 ss3<<i;
+		 p2->addPointCloud(data[i].cloud,ss1.str(),vp2_1);
+		 p2->addPointCloud(initoutclouds[i].cloud,ss2.str(),vp2_2);
+		 p2->addPointCloud(initoutclouds2[i].cloud,ss3.str(),vp2_3);
+	  }*/
+	 p2->spin();
+}
+
+ void cloudTransformation(Eigen::Matrix4f TransMatrix[],std::vector<PCD, Eigen::aligned_allocator<PCD> > &data)
+ {
+	 PCD_OUTPUT poc;
+	 poc.cloud=data[0].cloud;
+	 outcloudsparallel.push_back(poc);
+	 PointCloud::Ptr result (new PointCloud ); 
+	
+	 for(int i=1;i<data.size();i++)
+	 {
+	
+				cerr<<"\n_____ "<<i;
+				pcl::transformPointCloud (*data[i].cloud, *result, TransMatrix[i]);
+				cerr<<"\n^^^^ "<<i;
+				// Pushtransformed cloud into outclouds
+				PCD_OUTPUT poc;
+				poc.cloud=result;
+				outcloudsparallel.push_back(poc);
+	 }
+ 
+	 for (int i=0;i<outcloudsparallel.size();i++)
+  {		
+	  std::string ss=i+"zxcvbnmasdfghjklqwertyuiop";
+	  	cerr<<ss;	
+	  p->addPointCloud(outcloudsparallel[i].cloud,ss,vp_2);
+  }
+ }
+
+ ////////////////////////////////////////////////////////////////////////////////
+/** \brief Serial code to call pairAlign , cloud transformation in 2 steps
+  * \param data captured frames
+  */
  void callICP(std::vector<PCD, Eigen::aligned_allocator<PCD> > &data)
  {
- 
+  dwStart = GetTickCount();
   PointCloud::Ptr result (new PointCloud), source, target;
   Eigen::Matrix4f GlobalTransform = Eigen::Matrix4f::Identity (), pairTransform;
   
@@ -600,228 +983,257 @@ void pairAlign (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt
   PCD_OUTPUT oc;
   oc.cloud=data[0].cloud;
   outclouds.push_back(oc);
+  PointCloud::Ptr final(new PointCloud);
+  *final=*data[0].cloud;
 
   for (size_t i = 1; i < data.size (); ++i)
 	  {
 			source = data[i-1].cloud;
 			target = data[i].cloud;
-			// Add visualization data
-			showCloudsLeft(source, target);
-
+			
 			PointCloud::Ptr temp (new PointCloud);
 			PCL_INFO ("Aligning %d (%d) with %d (%d).\n", i-1, source->points.size (), i, target->points.size ());
 			pairAlign (source, target, temp, pairTransform, true);
-			//myPairAlign (source, target, temp, pairTransform, true);
-
+			//GlobalTransformSerial[i*2]=pairTransform;
+			
 			PCL_INFO("Alignment Complete");
 			std::cout<<"Alignment Done";
 			//transform current pair into the global transform
 			pcl::transformPointCloud (*temp, *result, GlobalTransform);
-
-				// Pushtransformed cloud into outclouds
+			
+			cerr<<"Alignment Between"<<i<<" & "<<i-1<<"\n"; 
+			cerr<<pairTransform*GlobalTransform;
+			
+			// Pushtransformed cloud into outclouds
 				PCD_OUTPUT oc;
 				oc.cloud=result;
 				outclouds.push_back(oc);
+
+				*final += *result;
 			//update the global transform
 			GlobalTransform = pairTransform * GlobalTransform;
-			//std::stringstream ss;
-			//ss << i << ".pcd";
-			//pcl::io::savePCDFile (ss.str (), *result, true);
-
+			GlobalTransformSerial[i]=GlobalTransform;
+			
 	  }
   cerr<<"Registration Finished.";
-  cleanAllClouds();
+
+  serialTime=GetTickCount()-dwStart;
+  cerr<<"Serial Time Taken "<<serialTime;
+
+  
   for (int i=0;i<outclouds.size();i++)
   {		
 	  std::string ss=i+"_thCloudBigStringForCloudIdentifier_ ";
-	   //   std::stringstream ss;
-		//	 ss << i << "_thCloud";
-		cerr<<ss;
-	  p->addPointCloud(outclouds[i].cloud,ss,vp_2);//,"_"+i,"vp_3");
+	  cerr<<ss;
+	  p->addPointCloud(outclouds[i].cloud,ss,vp_2);
   }
 
-  cerr<<"Smoothning...";
-  for (int i=0;i<outclouds.size();i++)
-  {
-	  smothClouds(outclouds[i].cloud);
-  }
-  for (int i=0;i<outclouds.size();i++)
+   //p->addPointCloud(final,"Serial",vp_3);
+ 
+
+  //p->spin();
+ }
+
+////////////////////////////////////////////////////////////////////////////////
+/** \brief Parallely calling pairAlignForOMP function for getting transformation, cloud transformation serially
+  * \param data captured frames
+  */
+ void callICP_OMP_Sift(std::vector<PCD, Eigen::aligned_allocator<PCD> > &data)
+ {
+ dwStart = GetTickCount();
+ pcl::PointCloud<pcl::PointXYZI>::Ptr  source, target;
+  Eigen::Matrix4f GlobalTransform = Eigen::Matrix4f::Identity ();
+  Eigen::Matrix4f pairTransform[50];
+  Eigen::Matrix4f pairTransform2[50];
+  pairTransform2[0]= Eigen::Matrix4f::Identity ();
+  pairTransform[0]= Eigen::Matrix4f::Identity ();
+
+  PointCloud::Ptr final(new PointCloud);
+  *final=*data[0].cloud;
+  
+  PointCloud::Ptr final2(new PointCloud);
+  *final2=*data[0].cloud;
+   
+  #pragma omp parallel for shared(pairTransform) 
+	  for (int i = 1; i < data.size (); ++i)
+		  {
+				pcl::PointCloud<pcl::PointXYZI>::Ptr siftKeyPoints = getSIFTKeypoints(data[i].cloud);
+				siftCloud[i].cloud=siftKeyPoints;
+				cerr<<"\n"<<i<<" Done";			
+		  }
+
+  #pragma omp parallel for shared(pairTransform) private(source,target)
+	  for (int i = 1; i < data.size (); ++i)
+		  {
+			
+			source = siftCloud[i-1].cloud;
+			target = siftCloud[i].cloud;
+						
+			PCL_INFO ("Aligning %d (%d) with %d (%d).\n", i-1, source->points.size (), i, target->points.size ());
+			pairAlignUsingSift(source, target, pairTransform[i]);
+    		}
+			
+			std::cout<<"Alignment Done";
+
+	  #pragma omp parallel 
+	{
+		#pragma omp for ordered
+			for (int i = 1; i < data.size (); ++i)
+			{
+				 #pragma omp ordered
+				{
+					
+				pairTransform2[i]=pairTransform[i];
+				pairTransform[i]=pairTransform[i]*pairTransform[i-1];
+				
+				pairTransform2[i]=pairTransform2[i-1]*pairTransform2[i];
+				GlobalTransformParallel[i]=pairTransform[i];
+				GlobalTransformParallel2[i]=pairTransform2[i];
+				std::cout<<"\n"<<i<<" thread "<<omp_get_thread_num();
+				cerr<<"\n alignment between "<<i<<" & "<<i-1<<"\n"<<pairTransform[i]<<"\n"<<pairTransform2[i];
+				}
+			}
+	}
+
+	PCD_OUTPUT poc;
+	 poc.cloud=data[0].cloud;
+	 outcloudsparallel.push_back(poc);
+	 PointCloud::Ptr result (new PointCloud ); 
+	
+
+	 for(int i=1;i<data.size();i++)
+	 {
+	
+				cerr<<"\n_____ "<<i;
+				pcl::transformPointCloud (*data[i].cloud, *result, GlobalTransformParallel[i]);
+				cerr<<"\n^^^^ "<<i;
+				// Pushtransformed cloud into outclouds
+				PCD_OUTPUT poc;
+				poc.cloud=result;
+				outcloudsparallel.push_back(poc);
+	 }
+ 
+	 for (int i=0;i<outcloudsparallel.size();i++)
   {		
-	  std::string ss=i+"_thCloudBigStringForCloudIdentifier_ ";
-	   //   std::stringstream ss;
-		//	 ss << i << "_thCloud";
-		cerr<<ss;
-	  p->addPointCloud(outclouds[i].cloud,ss,vp_3);//,"_"+i,"vp_3");
+	  std::string ss=i+"zxcvbnmasdfghjklqwertyuiopzxcvbnmasdfghjklqwertyuiop";
+	  	cerr<<ss;	
+	  p->addPointCloud(outcloudsparallel[i].cloud,ss,vp_2);
   }
 
-  p->spin();
+			
+  cerr<<"Registration Finished.";
+   ParallelTime=GetTickCount()-dwStart;
+  cerr<<"Parallel Time Taken "<<ParallelTime;
+ 
+
+ }
+
+////////////////////////////////////////////////////////////////////////////////
+/** \brief Parallely calling pairAlignForOMP function for getting transformation, cloud transformation serially
+  * \param data captured frames
+  */
+ void callICP_OMP(std::vector<PCD, Eigen::aligned_allocator<PCD> > &data)
+ {
+ dwStart = GetTickCount();
+  PointCloud::Ptr  source, target;
+  Eigen::Matrix4f GlobalTransform = Eigen::Matrix4f::Identity ();
+  Eigen::Matrix4f pairTransform[50];
+  Eigen::Matrix4f pairTransform2[50];
+  pairTransform2[0]= Eigen::Matrix4f::Identity ();
+  pairTransform[0]= Eigen::Matrix4f::Identity ();
+
+  PointCloud::Ptr final(new PointCloud);
+  *final=*data[0].cloud;
+  
+  PointCloud::Ptr final2(new PointCloud);
+  *final2=*data[0].cloud;
+  
+  int th_id;
+  #pragma omp parallel for shared(pairTransform) private(source,target)
+	  for (int i = 1; i < data.size (); ++i)
+		  {
+			 th_id=omp_get_thread_num();
+			source = data[i-1].cloud;
+			target = data[i].cloud;
+						
+			PCL_INFO ("Aligning %d (%d) with %d (%d).\n", i-1, source->points.size (), i, target->points.size ());
+			pairAlignForOMP (source, target,  pairTransform[i], true);
+    		}
+			
+			std::cout<<"Alignment Done";
+
+	  #pragma omp parallel 
+	{
+		#pragma omp for ordered
+			for (int i = 1; i < data.size (); ++i)
+			{
+				 #pragma omp ordered
+				{
+					
+				pairTransform2[i]=pairTransform[i];
+				pairTransform[i]=pairTransform[i]*pairTransform[i-1];
+				
+				pairTransform2[i]=pairTransform2[i-1]*pairTransform2[i];
+				GlobalTransformParallel[i]=pairTransform[i];
+				GlobalTransformParallel2[i]=pairTransform2[i];
+				std::cout<<"\n"<<i<<" thread "<<omp_get_thread_num();
+				cerr<<"\n alignment between "<<i<<" & "<<i-1<<"\n"<<pairTransform[i]<<"\n"<<pairTransform2[i];
+				}
+			}
+	}
+
+	PCD_OUTPUT poc;
+	 poc.cloud=data[0].cloud;
+	 outcloudsparallel.push_back(poc);
+	 PointCloud::Ptr result (new PointCloud ); 
+	
+
+	 for(int i=1;i<data.size();i++)
+	 {
+	
+				cerr<<"\n_____ "<<i;
+				pcl::transformPointCloud (*data[i].cloud, *result, GlobalTransformParallel[i]);
+				cerr<<"\n^^^^ "<<i;
+				// Pushtransformed cloud into outclouds
+				PCD_OUTPUT poc;
+				poc.cloud=result;
+				outcloudsparallel.push_back(poc);
+	 }
+ 
+	 for (int i=0;i<outcloudsparallel.size();i++)
+  {		
+	  std::string ss=i+"zxcvbnmasdfghjklqwertyuiopzxcvbnmasdfghjklqwertyuiop";
+	  	cerr<<ss;	
+	  p->addPointCloud(outcloudsparallel[i].cloud,ss,vp_2);
+  }
+
+			
+  cerr<<"Registration Finished.";
+   ParallelTime=GetTickCount()-dwStart;
+  cerr<<"Parallel Time Taken "<<ParallelTime;
+ 
+
  }
 
 
-
-// void myPairAlign (const PointCloud::Ptr cloud_src, const PointCloud::Ptr cloud_tgt, PointCloud::Ptr output, Eigen::Matrix4f &final_transform, bool downsample = false)
-//{
-//  //
-//  // Downsample for consistency and speed
-//  // \note enable this for large datasets
-//  PointCloud::Ptr src (new PointCloud);
-//  PointCloud::Ptr tgt (new PointCloud);
-//  pcl::VoxelGrid<PointT> grid;
-//  if (downsample)
-//  {
-//    grid.setLeafSize (0.05, 0.05, 0.05);
-//    grid.setInputCloud (cloud_src);
-//    grid.filter (*src);
-//
-//    grid.setInputCloud (cloud_tgt);
-//    grid.filter (*tgt);
-//  }
-//  else
-//  {
-//    src = cloud_src;
-//    tgt = cloud_tgt;
-//  }
-//
-//   /*
-//  // Compute surface normals and curvature
-//  PointCloudWithNormals::Ptr points_with_normals_src (new PointCloudWithNormals);
-//  PointCloudWithNormals::Ptr points_with_normals_tgt (new PointCloudWithNormals);
-//
-//  pcl::NormalEstimation<PointT, PointNormalT> norm_est;
-//  pcl::search::KdTree<pcl::PointXYZRGBA>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGBA> ());
-//  norm_est.setSearchMethod (tree);
-//  norm_est.setKSearch (30);
-//  
-//  norm_est.setInputCloud (src);
-//  norm_est.compute (*points_with_normals_src);
-//  pcl::copyPointCloud (*src, *points_with_normals_src);
-//
-//  norm_est.setInputCloud (tgt);
-//  norm_est.compute (*points_with_normals_tgt);
-//  pcl::copyPointCloud (*tgt, *points_with_normals_tgt);*/
-//
-//
-//  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr points_with_normals_src(new pcl::PointCloud<pcl::PointXYZRGBA>);
-//  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr points_with_normals_tgt(new pcl::PointCloud<pcl::PointXYZRGBA>);	
-//  pcl::SIFTKeypoint<PointT, PointT> sift;
-//	//PointCloud<PointWithScale>::Ptr sifts (new PointCloud<PointWithScale>);
-//	  const float min_scale = 0.0005; 
-//	const int nr_octaves = 4; 
-//	const int nr_scales_per_octave = 5; 
-//	const float min_contrast = 1; 
-//	pcl::search::KdTree<pcl::PointXYZRGBA>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGBA> ());
-//	sift.setSearchMethod(tree);
-//	sift.setScales(min_scale, nr_octaves, nr_scales_per_octave);
-//	sift.setMinimumContrast(min_contrast);
-//	sift.setInputCloud(src);
-//	sift.compute (*points_with_normals_src);	
-//	//pcl::copyPointCloud (*src, *points_with_normals_src);
-//
-//	sift.setInputCloud(tgt);
-//	sift.compute (*points_with_normals_tgt);
-//	//pcl::copyPointCloud (*tgt, *points_with_normals_tgt);
-//  //
-//  // Instantiate our custom point representation (defined above) ...
-//  MyPointRepresentation point_representation;
-//  // ... and weight the 'curvature' dimension so that it is balanced against x, y, and z
-//  float alpha[4] = {1.0, 1.0, 1.0, 1.0};
-//  point_representation.setRescaleValues (alpha);
-//
-//  //
-//  // Align
-//  //pcl::IterativeClosestPointNonLinear<PointNormalT, PointNormalT> reg;
-//  pcl::IterativeClosestPoint<PointCloud,PointCloud> reg;
-//  //reg.setTransformationEpsilon (1e-6);
-//  
-//  // Set the maximum distance between two correspondences (src<->tgt) to 10cm
-//  // Note: adjust this based on the size of your datasets
-//  
-//  //reg.setMaxCorrespondenceDistance (0.1);  
-//  
-//  // Set the point representation
-////  reg.setPointRepresentation (boost::make_shared<const MyPointRepresentation> (point_representation));
-//
-//  reg.setInputCloud (points_with_normals_src);
-//  reg.setInputTarget (points_with_normals_tgt);
-//
-//
-//
-//  //
-//  // Run the same optimization in a loop and visualize the results
-//  Eigen::Matrix4f Ti = Eigen::Matrix4f::Identity (), prev, targetToSource;
-//  pcl::PointCloud<pcl::PointXYZ>::Ptr reg_result (new pcl::PointCloud<pcl::PointXYZ>);// = points_with_normals_src;
-//  //reg.setMaximumIterations (2);
-//
-//  reg.align (*reg_result);
-//  points_with_normals_src = reg_result;
-//  Ti = reg.getFinalTransformation () ;
-//
-//  //for (int i = 0; i < 30; ++i)
-//  //{
-//  //  PCL_INFO ("Iteration Nr. %d.\n", i);
-//
-//  //  // save cloud for visualization purpose
-//  //  points_with_normals_src = reg_result;
-//
-//  //  // Estimate
-//  //  reg.setInputCloud (points_with_normals_src);
-//  //  reg.align (*reg_result);
-//	
-//		////accumulate transformation between each Iteration
-//  //  Ti = reg.getFinalTransformation () * Ti;
-//
-//		////if the difference between this transformation and the previous one
-//		////is smaller than the threshold, refine the process by reducing
-//		////the maximal correspondence distance
-//  //  if (fabs ((reg.getLastIncrementalTransformation () - prev).sum ()) < reg.getTransformationEpsilon ())
-//  //    reg.setMaxCorrespondenceDistance (reg.getMaxCorrespondenceDistance () - 0.001);
-//  //  
-//  //  prev = reg.getLastIncrementalTransformation ();
-//
-//  //  // visualize current state
-//  //  showCloudsRight(points_with_normals_tgt, points_with_normals_src);
-//  //}
-//
-//	//
-//  // Get the transformation from target to source
-//  targetToSource = Ti.inverse();
-//
-//  //
-//  // Transform target back in source frame
-//  pcl::transformPointCloud (*cloud_tgt, *output, targetToSource);
-//
-//  p->removePointCloud ("source");
-//  p->removePointCloud ("target");
-//  p->removePointCloud ("last");
-//
-//  PointCloudColorHandlerCustom<PointT> cloud_tgt_h (output, 0, 255, 0);
-//  PointCloudColorHandlerCustom<PointT> cloud_src_h (cloud_src, 255, 0, 0);
-//  p->addPointCloud (output, cloud_tgt_h, "target", vp_2);
-//  p->addPointCloud (cloud_src, cloud_src_h, "source", vp_2);
-//
-//    //add the source to the transformed target
-//  *output += *cloud_src;
-//  
-//  //p->addPointCloud (output,  "target", vp_2);
-//  //p->addPointCloud (cloud_src, "source", vp_2);
-//  p->addPointCloud(output,"last",vp_3);
-//
-//	PCL_INFO ("Press q to continue the registration.\n");
-//  p->spin ();
-//
-//  p->removePointCloud ("source"); 
-//  p->removePointCloud ("target");
-//
-//
-//  
-//  final_transform = targetToSource;
-// }
-//
-/* ---[ */
+ void checkMatrices(Eigen::Matrix4f Matrix1[],Eigen::Matrix4f Matrix2[],int size)
+ {
+	 for(int i=2;i<size;i++)
+	 {
+		 /*if(GlobalTransformSerial[i].coeff == GlobalTransformParallel[i].coeff)
+					if(GlobalTransformSerial[i].data == GlobalTransformParallel[i].data)*/
+						if (!(Matrix1[i].operator==( Matrix2[i])) )
+				cerr<<"\nMissmatch"<<i;
+			cerr<<"\nchecked"<<i;				
+	 }
+	
+ }
 
 
 int main (int argc, char** argv)
 {
+	
+	float speedUp,efficiency;
   // Load data
   std::vector<PCD, Eigen::aligned_allocator<PCD> > data;
   
@@ -840,23 +1252,64 @@ int main (int argc, char** argv)
   PCL_INFO ("Loaded %d datasets.", (int)data.size ());
   
   // Create a PCLVisualizer object
-  p = new pcl::visualization::PCLVisualizer (argc, argv, "Pairwise Incremental Registration example");
+  
   /*p->createViewPort (0.0, 0, 0.5, 1.0, vp_1);
   p->createViewPort (0.5, 0, 1.0, 1.0, vp_2);
 */
+  p = new pcl::visualization::PCLVisualizer (argc, argv, "Pairwise Incremental Registration example");
   p->createViewPort (0.0, 0, 0.33, 1.0, vp_1);
   p->createViewPort (0.33, 0, 0.66, 1.0, vp_2);
   p->createViewPort (0.66, 0, 1.0, 1.0, vp_3);
-  // p->createViewPort (0.0, 0, 0.5, 0.5, vp_1);
-  //p->createViewPort (0.5, 0, 1.0, 0.5, vp_2);
-  //p->createViewPort (0.0, 0.5, 0.5, 1.0, vp_3);
-  //p->createViewPort (0.5, 0.5, 1.0, 1.0, vp_4);
-  callICP(data);
+
+  //p->createViewPort (0.0, 0, 0.50, 1.0, vp_1);
+  //p->createViewPort (0.50, 0, 1.0, 1.0, vp_2);
+
+
+   PointCloud::Ptr inputcloud(new PointCloud);
+   *inputcloud =*data[0].cloud;
+  for(int i=1;i<data.size();i++)
+  {
+	  *inputcloud += *data[i].cloud;
+  }
+
+  p->addPointCloud(inputcloud,"Inputcloud",vp_1);
+// callICP(data);
+ //callICPNew(data);
+  temp(data);
+  //callICP_OMP_Sift(data);
+   //callICP_OMP(data);
+ //  callICP_OMP_New(data);
+   cerr<<"Checking 1";
+  // checkMatrices(GlobalTransformSerial,GlobalTransformParallel,data.size());
+   /*cerr<<"Checking 2";
+   checkMatrices(GlobalTransformParallel,GlobalTransformParallel2,data.size());
+   cloudTransformation(GlobalTransformParallel,data);*/
+
+  //serialTime=462432;
+
+  cerr<<"\nSerial Time Taken "<<serialTime;
+  cerr<<"\nParallel Time Taken "<<ParallelTime;
+  speedUp=(serialTime/ParallelTime)*100;
+
+  cerr<<"\nSpeedup"<<speedUp<<"%";
+  efficiency=speedUp/8;
+  cerr<<"\nEfficiency"<<efficiency<<"%";
+  cerr<<"\nsizes\n";
+  cerr<<outclouds.size()<<outclouds2.size()<<outcloudsparallel.size();
+  p->spin();
+  
  // callSACIA(data);
  
-  
+  getch();
 	
-  
+//  pcl::registration::ELCH<PointType> elch;
+//for (int i = 1; i < n; i++)
+//{
+//elch.addPointCloud (cloud[i]);
+//}
+//elch.setLoopStart (first);
+//elch.setLoopEnd (last);
+//elch.compute ();
 }
 
 

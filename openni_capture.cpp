@@ -92,10 +92,10 @@ OpenNICapture::onNewFrame (const PointCloudConstPtr &cloud)
   mutex_.lock ();
   ++frame_counter_;
   most_recent_frame_ = boost::make_shared<PointCloud> (*cloud); // Make a copy of the frame
-  if(frame_counter_%5==0)
+  /*if(frame_counter_%5==0)
   {
    trigger_=true;
-  }
+  }*/
   mutex_.unlock ();
 }
 
