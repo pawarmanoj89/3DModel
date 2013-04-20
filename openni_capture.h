@@ -5,14 +5,14 @@
 
 #include <pcl/io/openni_grabber.h>
 #include <pcl/visualization/pcl_visualizer.h>
-
-typedef pcl::PointXYZRGB PointT;
-typedef pcl::PointCloud<PointT> PointCloud;
-typedef pcl::PointNormal PointNormalT;
-typedef pcl::PointCloud<PointNormalT> PointCloudWithNormals;
-
-typedef pcl::PointCloud<PointT>::Ptr PointCloudPtr;
-typedef pcl::PointCloud<PointT>::ConstPtr PointCloudConstPtr;
+#include "model_builder.h"
+//typedef pcl::PointXYZRGB PointT;
+//typedef pcl::PointCloud<PointT> PointCloud;
+//typedef pcl::PointNormal PointNormalT;
+//typedef pcl::PointCloud<PointNormalT> PointCloudWithNormals;
+//
+//typedef pcl::PointCloud<PointT>::Ptr PointCloudPtr;
+//typedef pcl::PointCloud<PointT>::ConstPtr PointCloudConstPtr;
 /* A simple class for capturing data from an OpenNI camera */
 class OpenNICapture
 {

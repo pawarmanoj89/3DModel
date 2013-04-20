@@ -3,6 +3,7 @@
 #include <boost/thread/mutex.hpp>
 #include <boost/make_shared.hpp>
 
+
 OpenNICapture::OpenNICapture (const std::string& device_id)
   : grabber_ (device_id)
   , most_recent_frame_ ()

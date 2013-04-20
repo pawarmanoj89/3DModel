@@ -1,0 +1,117 @@
+Data Loading.. Enter No of Snaps32
+
+31captured frameData colloctedLoaded 32 datasets.
+ Size240734  23339
+ Size240934  23521
+ Size242075  23521
+ Size241986  24148
+ Size240256  24223
+ Size240868  24665
+ Size240816  24901
+ Size242106  25335
+ Size241025  25522
+ Size243369  25973
+ Size241684  26167
+ Size241039  25889
+ Size240219  26898
+ Size238762  27307
+ Size240337  27473
+ Size240328  27662
+ Size238799  28029
+ Size238266  28365
+ Size238779  28844
+ Size240015  28981
+ Size239776  29339
+ Size237692  29451
+ Size234783  29616
+ Size237220  30152
+ Size237717  30407
+ Size238259  30582
+ Size238281  30694
+ Size240904  31047
+ Size239564  31545
+ Size241896  32070
+ Size242095  32751
+ Size241913  32552
+Filtered
+tic1 965923948
+********************************!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Serial Finished###
+Time Taken 1138527
+tic2 967062475
+********************************!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Parallel Finished###
+Time Taken 806977
+tic1 967869452
+********************************!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Serial Parallel Finished###
+Time Taken 931685
+Comparison
+1138527
+806977
+931685
+Checking Matr..
+checked0
+checked1
+checked2
+checked3
+checked4
+checked5
+checked6
+checked7
+checked8
+checked9
+checked10
+checked11
+checked12
+checked13
+checked14
+checked15
+checked16
+checked17
+checked18
+checked19
+checked20
+checked21
+checked22
+checked23
+checked24
+checked25
+checked26
+checked27
+checked28
+checked29
+checked30
+Done
+checked0
+checked1
+checked2
+checked3
+checked4
+checked5
+checked6
+checked7
+checked8
+checked9
+checked10
+checked11
+checked12
+checked13
+checked14
+checked15
+checked16
+checked17
+checked18
+checked19
+checked20
+checked21
+checked22
+checked23
+checked24
+checked25
+checked26
+checked27
+checked28
+checked29
+checked30
+Done

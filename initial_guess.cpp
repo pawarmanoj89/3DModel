@@ -27,6 +27,7 @@
 #include <omp.h>
 #include "initial_guess.h"
 
+
 const double FILTER_LIMIT = 1000.0; 
 const int MAX_SACIA_ITERATIONS = 500; 
 
@@ -42,6 +43,9 @@ const int NR_SCALES_PER_OCTAVE = 5;
 const float MIN_CONTRAST = 1; 
 const float FPFH_REDIUS_SEARCH= 0.3;
 
+pcl::visualization::PCLVisualizer *p;
+int vp_1, vp_2, vp_3, vp_4;
+
 using pcl::visualization::PointCloudColorHandlerGenericField;
 using pcl::visualization::PointCloudColorHandlerCustom;
 
@@ -51,7 +55,7 @@ using pcl::visualization::PointCloudColorHandlerCustom;
 // This is a tutorial so we can afford having global variables 
 	//our visualizer
 
-	int vp2_1, vp2_2, vp2_3, vp2_4;
+	
 	float dwStart,serialTime,ParallelTime;
 	 Eigen::Matrix4f GlobalTransformSerial[20],GlobalTransformSerial2[20];
 	 Eigen::Matrix4f GlobalTransformParallel[20],GlobalTransformParallel2[20];
@@ -203,43 +207,49 @@ void
 	 
 	 cer.setInputCloud(descriptor1);
 	 cer.setInputTarget(descriptor2);
-	 
-	 cer.determineReciprocalCorrespondences(*corres);
-	 //cerr<<"\nFPFH Corres size "<<corres.size();
+	 cer.determineCorrespondences(*corres);
+	 //cer.determineReciprocalCorrespondences(*corres);
+	 cerr<<"\nFPFH Corres size "<<corres->size();
 	 
 }
 
 void 
-	InitialGuess::getInitialTransformation(pcl::PointCloud<pcl::PointXYZI>::Ptr keypoints1, pcl::PointCloud<pcl::PointXYZI>::Ptr keypoint2, pcl::CorrespondencesPtr corres, Eigen::Matrix4f &initialTransformation){
-
+	InitialGuess::getInitialTransformation(pcl::PointCloud<pcl::PointXYZI>::Ptr keypoints1, pcl::PointCloud<pcl::PointXYZI>::Ptr keypoints2, pcl::CorrespondencesPtr corres,pcl::CorrespondencesPtr inlier, Eigen::Matrix4f &initialTransformation){
+		
 		//boost::shared_ptr<pcl::Correspondences > corres2Ptr (new pcl::Correspondences(corres2));
-		boost::shared_ptr<pcl::Correspondences > newCorres2 (new pcl::Correspondences()) ;
+		//boost::shared_ptr<pcl::Correspondences > newCorres2 (new pcl::Correspondences()) ;
 		//pcl::CorrespondencesPtr  newCorres=new pcl::CorrCorrespondencesPtr();
 		
 		 pcl::registration::CorrespondenceRejectorSampleConsensus<pcl::PointXYZI> crsc;
 		 crsc.setInputCloud(keypoints1);
-		 crsc.setTargetCloud(keypoint2);
+		 crsc.setTargetCloud(keypoints2);
 		 crsc.setInputCorrespondences(corres);
 		 
 		 crsc.setMaxIterations(200);
-		 crsc.getCorrespondences(*newCorres2);
-		 
-		 initialTransformation=crsc.getBestTransformation();	
+		 crsc.getCorrespondences(*inlier);
+		 Eigen::Matrix4f trans=crsc.getBestTransformation();	
+		 initialTransformation=trans;//.inverse();
+		/*cerr<<"\n";
+		cerr<<initialTransformation;*/
 
 }
 
 void 
-	InitialGuess::computeInitialGuess(std::vector<PCD, Eigen::aligned_allocator<PCD> > &filteredData)
+	InitialGuess::computeInitialGuess(std::vector<PCD, Eigen::aligned_allocator<PCD> > &filteredData,Eigen::Matrix4f*& initialTransformationGuess)
 {
 	std::vector<PCD_NORMAL, Eigen::aligned_allocator<PCD_NORMAL> > normalData(filteredData.size() );
 	std::vector<PCD_SIFT, Eigen::aligned_allocator<PCD_SIFT> > siftData(filteredData.size() );
 	std::vector<PCD_FPFH, Eigen::aligned_allocator<PCD_FPFH> > fpfhData(filteredData.size() );
-	std::vector<PCD_CORS, Eigen::aligned_allocator<PCD_CORS> > corsData(filteredData.size() -1 );
-	Eigen::Matrix4f transformData[MAX_FRAME],transformData2[MAX_FRAME],transformData3[MAX_FRAME];
+	std::vector<PCD_CORS, Eigen::aligned_allocator<PCD_CORS> > corsData(filteredData.size()  );
+	std::vector<PCD_CORS, Eigen::aligned_allocator<PCD_CORS> > inlierData(filteredData.size()  );
+	//Eigen::Matrix4f *transformData=new Eigen::Matrix4f[MAX_FRAME];  //,transformData2[MAX_FRAME],transformData3[MAX_FRAME];
+	
 	DWORD ser,par,mix,tic;
 	tic=GetTickCount64();
 	cerr<<"\ntic1 "<<tic<<"\n";
-//#pragma omp parallel for
+
+
+	#pragma omp parallel for
 	 for(int i=0;i<filteredData.size();i++)
 	 {
 		 getNormals(filteredData[i].cloud,normalData[i].coludNormals);
@@ -248,75 +258,62 @@ void
 		 cerr<<"*";
 	 }
 	
-//#pragma omp parallel for
-	 for(int i=0;i<corsData.size();i++)
-	 {
-		 findCorrespondance(fpfhData[i].descriptor,fpfhData[i+1].descriptor,corsData[i].corres);
-		 getInitialTransformation(siftData[i].cloud,siftData[i+1].cloud,corsData[i].corres,transformData[i]);
-		 //cerr<<"\n"<<transformData[i];
-		 cerr<<"!";
-	 }
-	 ser=GetTickCount64()-tic;
-	 cerr<<"\nSerial Finished###\nTime Taken "<<ser;
-	 tic=GetTickCount64();
-	 cerr<<"\ntic2 "<<tic<<"\n";
+	 initialTransformationGuess[0]=Eigen::Matrix4f::Identity();
 #pragma omp parallel for
-	 for(int i=0;i<filteredData.size();i++)
+	 for(int i=1;i<corsData.size();i++)
 	 {
-		 getNormals(filteredData[i].cloud,normalData[i].coludNormals);
-		 getSIFTKeypoints(filteredData[i].cloud, siftData[i].cloud);
-		 computeFPFHFeatures(filteredData[i].cloud,normalData[i].coludNormals,siftData[i].cloud,fpfhData[i].descriptor);
-		 cerr<<"*";
-	 }
-	
-#pragma omp parallel for
-	 for(int i=0;i<corsData.size();i++)
-	 {
-		 findCorrespondance(fpfhData[i].descriptor,fpfhData[i+1].descriptor,corsData[i].corres);
-		 getInitialTransformation(siftData[i].cloud,siftData[i+1].cloud,corsData[i].corres,transformData2[i]);
+		 findCorrespondance(fpfhData[i-1].descriptor,fpfhData[i].descriptor,corsData[i].corres);
+		 getInitialTransformation(siftData[i-1].cloud,siftData[i].cloud,corsData[i].corres,inlierData[i].corres,initialTransformationGuess[i]);
 		 //cerr<<"\n"<<transformData[i];
 		 cerr<<"!";
 	 }
 	 par=GetTickCount64()-tic;
 	 cerr<<"\nParallel Finished###\nTime Taken "<<par;
 
-	 tic=GetTickCount64();
-	 cerr<<"\ntic1 "<<tic<<"\n";
-	  for(int i=0;i<filteredData.size();i++)
-	 {
-		 getNormals(filteredData[i].cloud,normalData[i].coludNormals);
-	}
-	  
-	 #pragma omp parallel for
-	 for(int i=0;i<filteredData.size();i++)
-	 {
-		getSIFTKeypoints(filteredData[i].cloud, siftData[i].cloud);
-	 }
+	 	  for(int i=0;i<filteredData.size()-1;i++)
+		  {
+			  cerr<<initialTransformationGuess[i];
+			  cerr<<"\n\n";
+		  }
+	 p = new pcl::visualization::PCLVisualizer("3DViewer");
+		  p->createViewPort (0.0, 0, 0.33, 1.0, vp_1);
+		  p->createViewPort (0.33, 0, 0.66, 1.0, vp_2);
+		  p->createViewPort (0.66, 0, 1.0, 1.0, vp_3);
 
-	   for(int i=0;i<filteredData.size();i++)
-	 {
-		 computeFPFHFeatures(filteredData[i].cloud,normalData[i].coludNormals,siftData[i].cloud,fpfhData[i].descriptor);
-		 cerr<<"*";
-	 }
-
-#pragma omp parallel for
-	 for(int i=0;i<corsData.size();i++)
-	 {
-		 findCorrespondance(fpfhData[i].descriptor,fpfhData[i+1].descriptor,corsData[i].corres);
-		 getInitialTransformation(siftData[i].cloud,siftData[i+1].cloud,corsData[i].corres,transformData3[i]);
-		 //cerr<<"\n"<<transformData[i];
-		 cerr<<"!";
-	 }
-	 mix=GetTickCount64()-tic;
-	 cerr<<"\nSerial Parallel Finished###\nTime Taken "<<mix;
-	 cerr<<"\nComparison\n"<<ser<<"\n"<<par<<"\n"<<mix;
-	 cerr<<"\nChecking Matr..";
-	 checkMatrices(transformData,transformData2,filteredData.size()-1);
-	 checkMatrices(transformData,transformData3,filteredData.size()-1);
-
+		/*  for(int i=0;i<filteredData.size()-1;i++)
+		  {		
+			  std::stringstream ss1 ("cloud_vp_1_");
+			  p->addPointCloud(filteredData[i].cloud,ss1.str(),vp_1);
+			  ss1<<i;
+			  p->addPointCloud(filteredData[i+1].cloud,ss1.str(),vp_1);
+			  displayCorrespondances(siftData[i].cloud,siftData[i+1].cloud,corsData[i].corres,inlierData[i].corres);
+			  p->removeAllPointClouds();
+			  p->removeAllShapes();
+		  }*/
 }
 
+void InitialGuess::displayCorrespondances(pcl::PointCloud<pcl::PointXYZI>::Ptr keypoints1, pcl::PointCloud<pcl::PointXYZI>::Ptr keypoints2, pcl::CorrespondencesPtr corres,pcl::CorrespondencesPtr inlier)
+{		
+	
+	for(int i=1;i<corres->size();i++)
+	{
+		pcl::PointXYZI srcpt=keypoints1->points.at(corres->at(i).index_query);              //corres[i].index_query);
+		 pcl::PointXYZI tgtpt=keypoints2->points.at(corres->at(i).index_match);
+		 std::stringstream ss2 ("line_vp_2_");
+		 ss2<<i;
+		 p->addLine<pcl::PointXYZI>(srcpt,tgtpt,ss2.str(),vp_2);
+	}
 
+	for(int i=1;i<inlier->size();i++)
+	{
+		 pcl::PointXYZI srcpt=keypoints1->points.at(inlier->at(i).index_query);
+		 pcl::PointXYZI tgtpt=keypoints2->points.at(inlier->at(i).index_match);
+		 std::stringstream ss3 ("line_vp_3_");
+		 ss3<<i;
+		 p->addLine<pcl::PointXYZI>(srcpt,tgtpt,ss3.str(),vp_3);
+	}
+	p->spin();
+}
 
 
  void InitialGuess::checkMatrices(Eigen::Matrix4f Matrix1[],Eigen::Matrix4f Matrix2[],int size)
